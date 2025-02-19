@@ -18,3 +18,9 @@ def download_snapshot(model_name: str, commit_hash: Optional[str] = None, **kwar
 def download_ko_sbert_sts() -> None:
     model_name = "jhgan/ko-sbert-sts"
     download_snapshot(model_name=model_name, ignore_patterns=["*.h5"])
+
+
+def download_llama_varco() -> None:
+    model_name = "NCSOFT/Llama-VARCO-8B-Instruct"
+    commit_hash = "fe2d9358a2d35451c04e4589b47e361cfacd350d"
+    download_snapshot(model_name=model_name, commit_hash=commit_hash)
