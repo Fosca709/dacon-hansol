@@ -24,3 +24,9 @@ def download_llama_varco() -> None:
     model_name = "NCSOFT/Llama-VARCO-8B-Instruct"
     commit_hash = "fe2d9358a2d35451c04e4589b47e361cfacd350d"
     download_snapshot(model_name=model_name, commit_hash=commit_hash)
+
+
+def download_llama_rabbit() -> None:
+    model_name = "CarrotAI/Llama-3.2-Rabbit-Ko-3B-Instruct-2412"
+    commit_hash = "ac6f1c0b756412163e17cb05d9e2f7ced274dc12"
+    download_snapshot(model_name=model_name, commit_hash=commit_hash)
