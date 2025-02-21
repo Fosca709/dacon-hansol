@@ -1,8 +1,16 @@
+import os
+from typing import Literal, Optional
+
+import chromadb
 import polars as pl
+from sentence_transformers import SentenceTransformer
+from tqdm.auto import tqdm
 from transformers import GenerationMixin
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
+from . import SAVE_PATH
 from .data import concat_fields, load_data
+from .model import load_ko_sbert_sts
 
 ZERO_SHOT_SYSTEM_PROMPT = """당신은 건설 안전 전문가입니다. 질문에 핵심 내용만 간략하게 답하세요. 서론, 배경 설명 또는 추가 설명 없이 바로 답변하세요."""
 ZERO_SHOT_QUESTION_PROMPT = "\n위와 같은 상황에서 재발 방지 대책 및 향후 조치 계획은 무엇인가요?"
@@ -95,6 +103,103 @@ def vllm_few_shot(
     texts = df_processed["text"].to_list()
     conversations = [get_few_shot_messages(text, few_shot_messages) for text in texts]
 
+    sampling_params = SamplingParams(n=1, temperature=temperature, max_tokens=max_new_tokens, **kwargs)
+    outputs = model.chat(messages=conversations, sampling_params=sampling_params)
+    output_texts = [output.outputs[0].text for output in outputs]
+    return pl.Series(name="pred", values=output_texts)
+
+
+def load_data_with_embed(
+    mode: Literal["train", "test"], embed_model: Optional[SentenceTransformer] = None
+) -> pl.DataFrame:
+    file_path = SAVE_PATH / "data" / f"{mode}_with_embed.parquet"
+    if os.path.exists(file_path):
+        df = pl.read_parquet(file_path)
+        return df
+
+    if embed_model is None:
+        embed_model = load_ko_sbert_sts()
+
+    df = load_data(mode)
+    df_cat = concat_fields(df)
+
+    embeddings = embed_model.encode(df_cat["text"].to_list(), show_progress_bar=True)
+    df_embed = pl.Series(name="embedding", values=embeddings)
+
+    df_with_embed = df_cat.select(df["ID"], pl.all(), df_embed)
+    df_with_embed.write_parquet(file_path)
+    return df_with_embed
+
+
+def get_rag_conversations(
+    num_retrievals: int,
+    train_sample_size: Optional[int] = None,
+    test_sample_size: Optional[int] = None,
+    batch_size: int = 1024,
+    system_prompt=ZERO_SHOT_SYSTEM_PROMPT,
+    question_prompt=ZERO_SHOT_QUESTION_PROMPT,
+    embed_model: Optional[SentenceTransformer] = None,
+) -> list[dict[str, str]]:
+    df_train = load_data_with_embed("train", embed_model=embed_model)
+    if train_sample_size is not None:
+        df_train = df_train[:train_sample_size]
+
+    df_test = load_data_with_embed("test", embed_model=embed_model)
+    if test_sample_size is not None:
+        df_test = df_test[:test_sample_size]
+
+    chroma_client = chromadb.Client()
+    collection = chroma_client.create_collection(name="train", metadata={"hnsw:space": "cosine"})
+
+    idx = 0
+    while idx < len(df_train):
+        df_batch = df_train[idx : idx + batch_size]
+
+        ids = df_batch["ID"].to_list()
+        embeddings = df_batch["embedding"].to_list()
+        metadatas = df_batch.select(pl.struct("text", "answer").alias("meta"))["meta"].to_list()
+
+        collection.add(ids=ids, embeddings=embeddings, metadatas=metadatas)
+
+        idx += batch_size
+
+    conversations = []
+    for row in tqdm(df_test.iter_rows(named=True)):
+        text = row["text"]
+        embedding = row["embedding"]
+        retrieved = collection.query(query_embeddings=embedding, n_results=num_retrievals)
+        retrieved = retrieved["metadatas"][0]
+
+        messages = [{"role": "system", "content": system_prompt}]
+        for r in retrieved:
+            messages.append({"role": "user", "content": f"{r['text']}{question_prompt}"})
+            messages.append({"role": "assistant", "content": r["answer"]})
+        messages.append({"role": "user", "content": f"{text}{question_prompt}"})
+        conversations.append(messages)
+
+    return conversations
+
+
+def vllm_few_shot_with_rag(
+    model,
+    num_retrievals: int,
+    max_new_tokens: int,
+    train_sample_size: Optional[int] = None,
+    test_sample_size: Optional[int] = None,
+    embed_model: Optional[SentenceTransformer] = None,
+    temperature: float = 0,
+    **kwargs,
+) -> pl.Series:
+    from vllm import LLM, SamplingParams
+
+    assert isinstance(model, LLM)
+
+    conversations = get_rag_conversations(
+        num_retrievals=num_retrievals,
+        train_sample_size=train_sample_size,
+        test_sample_size=test_sample_size,
+        embed_model=embed_model,
+    )
     sampling_params = SamplingParams(n=1, temperature=temperature, max_tokens=max_new_tokens, **kwargs)
     outputs = model.chat(messages=conversations, sampling_params=sampling_params)
     output_texts = [output.outputs[0].text for output in outputs]

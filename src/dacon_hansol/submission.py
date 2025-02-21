@@ -6,7 +6,13 @@ from sentence_transformers import SentenceTransformer
 
 from . import SAVE_PATH
 from .data import load_data
-from .inference import get_default_few_shot_examples, get_messages_from_frame, vllm_few_shot, vllm_zero_shot
+from .inference import (
+    get_default_few_shot_examples,
+    get_messages_from_frame,
+    vllm_few_shot,
+    vllm_few_shot_with_rag,
+    vllm_zero_shot,
+)
 from .model import MODEL_NAMES, load_ko_sbert_sts, load_vllm_chat_model
 
 
@@ -78,5 +84,37 @@ def few_shot_submission(
     df_pred = vllm_few_shot(model=model, df=df_test, few_shot_messages=few_shot_messages, max_new_tokens=max_new_tokens)
 
     embeddings = make_embeddings(df_pred=df_pred)
+    submission = make_submission(df=df_test, df_pred=df_pred, embeddings=embeddings)
+    submission.write_csv(SAVE_PATH / "submission.csv")
+
+
+def rag_submission(
+    model_name: str = "varco",
+    max_new_tokens: int = 64,
+    num_retrievals: int = 4,
+    train_sample_size: Optional[int] = None,
+    test_sample_size: Optional[int] = None,
+    embed_model: Optional[SentenceTransformer] = None,
+    **kwargs,
+) -> None:
+    df_test = load_data("test")
+    if test_sample_size is not None:
+        df_test = df_test[:test_sample_size]
+
+    if model_name in MODEL_NAMES:
+        model_name = MODEL_NAMES[model_name]
+    model = load_vllm_chat_model(model_name)
+
+    df_pred = vllm_few_shot_with_rag(
+        model=model,
+        num_retrievals=num_retrievals,
+        max_new_tokens=max_new_tokens,
+        train_sample_size=train_sample_size,
+        test_sample_size=test_sample_size,
+        embed_model=embed_model,
+        **kwargs,
+    )
+
+    embeddings = make_embeddings(df_pred=df_pred, model=embed_model)
     submission = make_submission(df=df_test, df_pred=df_pred, embeddings=embeddings)
     submission.write_csv(SAVE_PATH / "submission.csv")
