@@ -45,7 +45,10 @@ def sample_submission() -> pl.DataFrame:
 
 
 def zero_shot_submission(
-    model_name: str = "varco", max_new_tokens: int = 64, sample_size: Optional[int] = None
+    model_name: str = "varco",
+    max_new_tokens: int = 64,
+    sample_size: Optional[int] = None,
+    sampling_params=None,
 ) -> None:
     if model_name in MODEL_NAMES:
         model_name = MODEL_NAMES[model_name]
@@ -55,7 +58,7 @@ def zero_shot_submission(
     if sample_size is not None:
         df_test = df_test[:sample_size]
 
-    df_pred = vllm_zero_shot(model=model, df=df_test, max_new_tokens=max_new_tokens)
+    df_pred = vllm_zero_shot(model=model, df=df_test, max_new_tokens=max_new_tokens, sampling_params=sampling_params)
     df_pred.to_frame().write_json(SAVE_PATH / "pred.json")
 
     embeddings = make_embeddings(df_pred=df_pred)
@@ -68,6 +71,7 @@ def few_shot_submission(
     df_examples: Optional[pl.DataFrame] = None,
     max_new_tokens: int = 64,
     sample_size: Optional[int] = None,
+    sampling_params=None,
 ) -> None:
     if df_examples is None:
         df_examples = get_default_few_shot_examples(num_examples=4)
@@ -81,7 +85,13 @@ def few_shot_submission(
         model_name = MODEL_NAMES[model_name]
     model = load_vllm_chat_model(model_name)
 
-    df_pred = vllm_few_shot(model=model, df=df_test, few_shot_messages=few_shot_messages, max_new_tokens=max_new_tokens)
+    df_pred = vllm_few_shot(
+        model=model,
+        df=df_test,
+        few_shot_messages=few_shot_messages,
+        max_new_tokens=max_new_tokens,
+        sampling_params=sampling_params,
+    )
 
     embeddings = make_embeddings(df_pred=df_pred)
     submission = make_submission(df=df_test, df_pred=df_pred, embeddings=embeddings)
@@ -95,7 +105,7 @@ def rag_submission(
     train_sample_size: Optional[int] = None,
     test_sample_size: Optional[int] = None,
     embed_model: Optional[SentenceTransformer] = None,
-    **kwargs,
+    sampling_params=None,
 ) -> None:
     df_test = load_data("test")
     if test_sample_size is not None:
@@ -112,7 +122,7 @@ def rag_submission(
         train_sample_size=train_sample_size,
         test_sample_size=test_sample_size,
         embed_model=embed_model,
-        **kwargs,
+        sampling_params=sampling_params,
     )
 
     embeddings = make_embeddings(df_pred=df_pred, model=embed_model)

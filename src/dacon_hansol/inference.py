@@ -13,11 +13,12 @@ from .data import concat_fields, load_data
 from .model import load_ko_sbert_sts
 
 ZERO_SHOT_SYSTEM_PROMPT = """당신은 건설 안전 전문가입니다. 질문에 핵심 내용만 간략하게 답하세요. 서론, 배경 설명 또는 추가 설명 없이 바로 답변하세요."""
-ZERO_SHOT_QUESTION_PROMPT = "다음과 같은 상황에서 재발 방지 대책 및 향후 조치 계획은 무엇인가요?"
+ZERO_SHOT_QUESTION_PROMPT = "위와 같은 상황에서 재발 방지 대책 및 향후 조치 계획은 무엇인가요?"
+# ZERO_SHOT_QUESTION_PROMPT = "다음과 같은 상황에서 재발 방지 대책 및 향후 조치 계획은 무엇인가요?"
 
 
 def get_user_prompt(text: str, question_prompt=ZERO_SHOT_QUESTION_PROMPT):
-    return f"{question_prompt}\n\n{text}"
+    return f"{text}\n{question_prompt}"
 
 
 def get_zero_shot_messages(text: str, system_prompt=ZERO_SHOT_SYSTEM_PROMPT, question_prompt=ZERO_SHOT_QUESTION_PROMPT):
@@ -42,7 +43,13 @@ def naive_zero_shot(
     return outputs
 
 
-def vllm_zero_shot(model, df: pl.DataFrame, max_new_tokens: int, **kwargs) -> pl.Series:
+def get_default_sampling_params(max_new_tokens: int):
+    from vllm import SamplingParams
+
+    return SamplingParams(n=1, temperature=0.5, top_p=0.9, max_tokens=max_new_tokens)
+
+
+def vllm_zero_shot(model, df: pl.DataFrame, max_new_tokens: int, sampling_params=None) -> pl.Series:
     from vllm import LLM, SamplingParams
 
     assert isinstance(model, LLM)
@@ -51,7 +58,10 @@ def vllm_zero_shot(model, df: pl.DataFrame, max_new_tokens: int, **kwargs) -> pl
     texts = df_processed["text"].to_list()
     conversations = [get_zero_shot_messages(text) for text in texts]
 
-    sampling_params = SamplingParams(n=1, temperature=0, max_tokens=max_new_tokens, **kwargs)
+    if sampling_params is None:
+        sampling_params = get_default_sampling_params(max_new_tokens)
+    assert isinstance(sampling_params, SamplingParams)
+
     outputs = model.chat(messages=conversations, sampling_params=sampling_params)
     output_texts = [output.outputs[0].text for output in outputs]
     return pl.Series(name="pred", values=output_texts)
@@ -97,8 +107,7 @@ def vllm_few_shot(
     df: pl.DataFrame,
     few_shot_messages: list[dict[str, str]],
     max_new_tokens: int,
-    temperature: float = 0,
-    **kwargs,
+    sampling_params=None,
 ) -> pl.Series:
     from vllm import LLM, SamplingParams
 
@@ -108,7 +117,10 @@ def vllm_few_shot(
     texts = df_processed["text"].to_list()
     conversations = [get_few_shot_messages(text, few_shot_messages) for text in texts]
 
-    sampling_params = SamplingParams(n=1, temperature=temperature, max_tokens=max_new_tokens, **kwargs)
+    if sampling_params is None:
+        sampling_params = get_default_sampling_params(max_new_tokens)
+    assert isinstance(sampling_params, SamplingParams)
+
     outputs = model.chat(messages=conversations, sampling_params=sampling_params)
     output_texts = [output.outputs[0].text for output in outputs]
     return pl.Series(name="pred", values=output_texts)
@@ -193,8 +205,7 @@ def vllm_few_shot_with_rag(
     train_sample_size: Optional[int] = None,
     test_sample_size: Optional[int] = None,
     embed_model: Optional[SentenceTransformer] = None,
-    temperature: float = 0,
-    **kwargs,
+    sampling_params=None,
 ) -> pl.Series:
     from vllm import LLM, SamplingParams
 
@@ -206,7 +217,11 @@ def vllm_few_shot_with_rag(
         test_sample_size=test_sample_size,
         embed_model=embed_model,
     )
-    sampling_params = SamplingParams(n=1, temperature=temperature, max_tokens=max_new_tokens, **kwargs)
+
+    if sampling_params is None:
+        sampling_params = get_default_sampling_params(max_new_tokens)
+    assert isinstance(sampling_params, SamplingParams)
+
     outputs = model.chat(messages=conversations, sampling_params=sampling_params)
     output_texts = [output.outputs[0].text for output in outputs]
     return pl.Series(name="pred", values=output_texts)
