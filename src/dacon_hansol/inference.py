@@ -13,11 +13,15 @@ from .data import concat_fields, load_data
 from .model import load_ko_sbert_sts
 
 ZERO_SHOT_SYSTEM_PROMPT = """당신은 건설 안전 전문가입니다. 질문에 핵심 내용만 간략하게 답하세요. 서론, 배경 설명 또는 추가 설명 없이 바로 답변하세요."""
-ZERO_SHOT_QUESTION_PROMPT = "\n위와 같은 상황에서 재발 방지 대책 및 향후 조치 계획은 무엇인가요?"
+ZERO_SHOT_QUESTION_PROMPT = "다음과 같은 상황에서 재발 방지 대책 및 향후 조치 계획은 무엇인가요?"
+
+
+def get_user_prompt(text: str, question_prompt=ZERO_SHOT_QUESTION_PROMPT):
+    return f"{question_prompt}\n\n{text}"
 
 
 def get_zero_shot_messages(text: str, system_prompt=ZERO_SHOT_SYSTEM_PROMPT, question_prompt=ZERO_SHOT_QUESTION_PROMPT):
-    user_prompt = f"{text}{question_prompt}"
+    user_prompt = get_user_prompt(text, question_prompt=question_prompt)
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
     return messages
 
@@ -70,7 +74,7 @@ def get_messages_from_frame(
     few_shot_messages = [{"role": "system", "content": system_prompt}]
 
     for row in df_examples.iter_rows():
-        user_message = f"{row[0]}{question_prompt}"
+        user_message = get_user_prompt(row[0], question_prompt=question_prompt)
         few_shot_messages.append({"role": "user", "content": user_message})
 
         assistant_message = row[1]
@@ -80,10 +84,11 @@ def get_messages_from_frame(
 
 
 def get_few_shot_messages(
-    text: str, few_shot_messages: list[dict[str, str]], qeustion_prompt: str = ZERO_SHOT_QUESTION_PROMPT
+    text: str, few_shot_messages: list[dict[str, str]], question_prompt: str = ZERO_SHOT_QUESTION_PROMPT
 ) -> list[dict[str, str]]:
     messages = few_shot_messages.copy()
-    messages.append({"role": "user", "content": f"{text}{qeustion_prompt}"})
+    user_message = get_user_prompt(text, question_prompt=question_prompt)
+    messages.append({"role": "user", "content": user_message})
     return messages
 
 
@@ -123,7 +128,8 @@ def load_data_with_embed(
     df = load_data(mode)
     df_cat = concat_fields(df)
 
-    embeddings = embed_model.encode(df_cat["text"].to_list(), show_progress_bar=True)
+    texts_with_question = df_cat["text"].map_elements(get_user_prompt, return_dtype=pl.String).to_list()
+    embeddings = embed_model.encode(texts_with_question, show_progress_bar=True)
     df_embed = pl.Series(name="embedding", values=embeddings)
 
     df_with_embed = df_cat.select(df["ID"], pl.all(), df_embed)
@@ -172,9 +178,9 @@ def get_rag_conversations(
 
         messages = [{"role": "system", "content": system_prompt}]
         for r in retrieved:
-            messages.append({"role": "user", "content": f"{r['text']}{question_prompt}"})
+            messages.append({"role": "user", "content": get_user_prompt(r["text"], question_prompt)})
             messages.append({"role": "assistant", "content": r["answer"]})
-        messages.append({"role": "user", "content": f"{text}{question_prompt}"})
+        messages.append({"role": "user", "content": get_user_prompt(text, question_prompt)})
         conversations.append(messages)
 
     return conversations
