@@ -9,22 +9,15 @@ from transformers import GenerationMixin
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from . import SAVE_PATH
-from .data import concat_fields, load_data
+from .data import (
+    DEFAULT_QUESTION_PROMPT,
+    DEFAULT_SYSTEM_PROMPT,
+    concat_fields,
+    get_user_prompt,
+    get_zero_shot_messages,
+    load_data,
+)
 from .model import load_ko_sbert_sts
-
-ZERO_SHOT_SYSTEM_PROMPT = """당신은 건설 안전 전문가입니다. 질문에 핵심 내용만 간략하게 답하세요. 서론, 배경 설명 또는 추가 설명 없이 바로 답변하세요."""
-ZERO_SHOT_QUESTION_PROMPT = "위와 같은 상황에서 재발 방지 대책 및 향후 조치 계획은 무엇인가요?"
-# ZERO_SHOT_QUESTION_PROMPT = "다음과 같은 상황에서 재발 방지 대책 및 향후 조치 계획은 무엇인가요?"
-
-
-def get_user_prompt(text: str, question_prompt=ZERO_SHOT_QUESTION_PROMPT):
-    return f"{text}\n{question_prompt}"
-
-
-def get_zero_shot_messages(text: str, system_prompt=ZERO_SHOT_SYSTEM_PROMPT, question_prompt=ZERO_SHOT_QUESTION_PROMPT):
-    user_prompt = get_user_prompt(text, question_prompt=question_prompt)
-    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-    return messages
 
 
 def naive_zero_shot(
@@ -78,8 +71,8 @@ def get_default_few_shot_examples(num_examples: int) -> pl.DataFrame:
 
 def get_messages_from_frame(
     df_examples: pl.DataFrame,
-    system_prompt: str = ZERO_SHOT_SYSTEM_PROMPT,
-    question_prompt: str = ZERO_SHOT_QUESTION_PROMPT,
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+    question_prompt: str = DEFAULT_QUESTION_PROMPT,
 ) -> list[dict[str, str]]:
     few_shot_messages = [{"role": "system", "content": system_prompt}]
 
@@ -94,7 +87,7 @@ def get_messages_from_frame(
 
 
 def get_few_shot_messages(
-    text: str, few_shot_messages: list[dict[str, str]], question_prompt: str = ZERO_SHOT_QUESTION_PROMPT
+    text: str, few_shot_messages: list[dict[str, str]], question_prompt: str = DEFAULT_QUESTION_PROMPT
 ) -> list[dict[str, str]]:
     messages = few_shot_messages.copy()
     user_message = get_user_prompt(text, question_prompt=question_prompt)
@@ -154,8 +147,8 @@ def get_rag_conversations(
     train_sample_size: Optional[int] = None,
     test_sample_size: Optional[int] = None,
     batch_size: int = 1024,
-    system_prompt=ZERO_SHOT_SYSTEM_PROMPT,
-    question_prompt=ZERO_SHOT_QUESTION_PROMPT,
+    system_prompt=DEFAULT_SYSTEM_PROMPT,
+    question_prompt=DEFAULT_QUESTION_PROMPT,
     embed_model: Optional[SentenceTransformer] = None,
 ) -> list[dict[str, str]]:
     df_train = load_data_with_embed("train", embed_model=embed_model)
