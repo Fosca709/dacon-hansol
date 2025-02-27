@@ -1,7 +1,10 @@
+import os
 from typing import Literal
 
+import numpy as np
 import polars as pl
 from datasets import Dataset
+from sklearn.model_selection import StratifiedShuffleSplit
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from trl import DataCollatorForCompletionOnlyLM, apply_chat_template
 
@@ -56,7 +59,7 @@ def get_trl_dataset(df: pl.DataFrame, tokenizer: PreTrainedTokenizerBase) -> Dat
         messages.append({"role": "assistant", "content": row["answer"]})
         return apply_chat_template({"messages": messages}, tokenizer)
 
-    dataset = dataset.map(make_template, remove_columns="answer")
+    dataset = dataset.map(make_template)
     return dataset
 
 
@@ -64,3 +67,31 @@ def get_llama_collator(tokenizer: PreTrainedTokenizerBase) -> DataCollatorForCom
     return DataCollatorForCompletionOnlyLM(
         tokenizer=tokenizer, response_template="<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
     )
+
+
+def make_split_indices() -> np.ndarray:
+    indices_path = DATA_PATH / "indices.npy"
+    if os.path.exists(indices_path):
+        return np.load(indices_path)
+
+    TEST_SIZE = 500
+    df = load_data("train")
+
+    splitter = StratifiedShuffleSplit(n_splits=1, test_size=TEST_SIZE, random_state=42)
+    split = list(splitter.split(X=df, y=df["인적사고"]))
+    val_indices = split[0][1]
+    np.save(indices_path, val_indices)
+    return val_indices
+
+
+def train_val_split() -> tuple[pl.DataFrame, pl.DataFrame]:
+    df = load_data("train")
+    indices = make_split_indices()
+
+    set_indices = set(indices)
+    train_indices = [i for i in range(len(df)) if i not in set_indices]
+
+    df_train = df[train_indices]
+    df_val = df[indices]
+
+    return df_train, df_val

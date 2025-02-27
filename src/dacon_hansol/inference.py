@@ -2,6 +2,7 @@ import os
 from typing import Literal, Optional
 
 import chromadb
+import numpy as np
 import polars as pl
 from sentence_transformers import SentenceTransformer
 from tqdm.auto import tqdm
@@ -218,3 +219,65 @@ def vllm_few_shot_with_rag(
     outputs = model.chat(messages=conversations, sampling_params=sampling_params)
     output_texts = [output.outputs[0].text for output in outputs]
     return pl.Series(name="pred", values=output_texts)
+
+
+def cosine_similarity(a: np.ndarray, b: np.ndarray, eps=1e-8) -> np.ndarray:
+    # a,b : [B, N], output: [B,]
+    dot_product = np.sum(a * b, axis=1)
+    norm_a = np.linalg.norm(a, axis=1)
+    norm_b = np.linalg.norm(b, axis=1)
+    return dot_product / (norm_a * norm_b + eps)
+
+
+def jaccard_similarity(text1, text2):
+    """자카드 유사도 계산"""
+    set1, set2 = set(text1.split()), set(text2.split())  # 단어 집합 생성
+    intersection = len(set1.intersection(set2))  # 교집합 크기
+    union = len(set1.union(set2))  # 합집합 크기
+    return intersection / union if union != 0 else 0
+
+
+def make_scores(df: pl.DataFrame, df_pred: pl.Series, embed_model: SentenceTransformer) -> pl.DataFrame:
+    df_score = df.with_columns(df_pred)
+
+    def compute_jaccard(row):
+        return jaccard_similarity(row["answer"], row["pred"])
+
+    df_score = df_score.with_columns(
+        pl.struct("answer", "pred").alias("jaccard").map_elements(compute_jaccard, return_dtype=pl.Float64)
+    )
+
+    answers_embed = embed_model.encode(df_score["answer"].to_list(), show_progress_bar=True)
+    preds_embed = embed_model.encode(df_score["pred"].to_list(), show_progress_bar=True)
+    cos_scores = cosine_similarity(answers_embed, preds_embed)
+    df_score = df_score.with_columns(pl.Series(name="cosine", values=cos_scores))
+
+    df_score = df_score.with_columns(
+        (0.7 * pl.col("cosine").clip(lower_bound=0.0) + 0.3 * pl.col("jaccard").clip(lower_bound=0.0)).alias("score")
+    )
+    return df_score
+
+
+def validate(
+    model,
+    df: pl.DataFrame,
+    embed_model: Optional[SentenceTransformer] = None,
+    max_new_tokens: int = 128,
+    sampling_params=None,
+) -> pl.DataFrame:
+    from vllm import LLM, SamplingParams
+
+    assert isinstance(model, LLM)
+
+    if sampling_params is None:
+        sampling_params = SamplingParams(n=1, max_tokens=max_new_tokens, temperature=0)
+
+    df_pred = vllm_zero_shot(model=model, df=df, max_new_tokens=max_new_tokens, sampling_params=sampling_params)
+    df_cat = concat_fields(df)
+
+    if embed_model is None:
+        embed_model = load_ko_sbert_sts()
+    df_score = make_scores(df=df_cat, df_pred=df_pred, embed_model=embed_model)
+
+    print(f"Average score: {df_score['score'].mean()}")
+    return df_score

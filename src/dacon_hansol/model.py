@@ -65,9 +65,9 @@ def load_vllm_chat_model(model_name: str):
     return model
 
 
-def load_mock_model() -> LlamaForCausalLM:
+def load_mock_model(vocab_size: int = 128000) -> LlamaForCausalLM:
     config = LlamaConfig(
-        vocab_size=128000, hidden_size=128, intermediate_size=256, num_hidden_layers=1, num_attention_heads=2
+        vocab_size=vocab_size, hidden_size=128, intermediate_size=256, num_hidden_layers=1, num_attention_heads=2
     )
 
     return LlamaForCausalLM(config)

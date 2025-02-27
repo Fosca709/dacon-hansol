@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -30,3 +31,11 @@ def download_llama_rabbit() -> None:
     model_name = "CarrotAI/Llama-3.2-Rabbit-Ko-3B-Instruct-2412"
     commit_hash = "ac6f1c0b756412163e17cb05d9e2f7ced274dc12"
     download_snapshot(model_name=model_name, commit_hash=commit_hash)
+
+
+def get_date() -> str:
+    return datetime.now(timezone.utc).strftime("%y%m%d_%H%M%S")
+
+
+def get_save_name(run_name: str) -> str:
+    return f"{get_date()}_{run_name}"
