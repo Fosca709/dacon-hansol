@@ -1,10 +1,14 @@
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from huggingface_hub import snapshot_download
+from huggingface_hub import HfApi, snapshot_download
 
 from . import SAVE_PATH
+
+HF_API_TOKEN = os.getenv("HF_API_TOKEN")
+HF_REPO_NAME = "Fosca709/dacon-hansol"
 
 
 def get_model_dir(model_name: str) -> Path:
@@ -39,3 +43,12 @@ def get_date() -> str:
 
 def get_save_name(run_name: str) -> str:
     return f"{get_date()}_{run_name}"
+
+
+def hf_upload_folder(folder_path: Path) -> None:
+    api = HfApi(token=HF_API_TOKEN)
+    api.upload_folder(
+        repo_id=HF_REPO_NAME,
+        folder_path=folder_path,
+        path_in_repo=folder_path.name,
+    )

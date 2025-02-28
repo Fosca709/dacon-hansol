@@ -21,17 +21,21 @@ def load_tokenizer(model_name: str) -> PreTrainedTokenizerBase:
     tokenizer = AutoTokenizer.from_pretrained(model_dir, local_files_only=True)
 
     if model_name == MODEL_NAMES["varco"]:
-        # chat template from rabbit's tokenizer
-        chat_template = "{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% set loop_messages = messages %}{% for message in loop_messages %}{% set content = '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'+ message['content'] | trim + '<|eot_id|>' %}{% if loop.index0 == 0 %}{% set content = bos_token + content %}{% endif %}{{ content }}{% endfor %}{% if add_generation_prompt %}{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}{% endif %}"
-        tokenizer.chat_template = chat_template
-
-        # Initially, pad_token_id is set to 0, which is the same ID as the "!" token.
-        # Using pad_token_id for a commonly used token is not ideal.
-        # Additionally, it does not align well with the data collator in the TRL library.
-        # Therefore, it has been changed to the value used in rabbit's tokenizer.
-        tokenizer.pad_token_id = 128001
+        fix_varco_tokenizer(tokenizer)
 
     return tokenizer
+
+
+def fix_varco_tokenizer(tokenizer: PreTrainedTokenizerBase) -> None:
+    # chat template from rabbit's tokenizer
+    chat_template = "{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% set loop_messages = messages %}{% for message in loop_messages %}{% set content = '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'+ message['content'] | trim + '<|eot_id|>' %}{% if loop.index0 == 0 %}{% set content = bos_token + content %}{% endif %}{{ content }}{% endfor %}{% if add_generation_prompt %}{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}{% endif %}"
+    tokenizer.chat_template = chat_template
+
+    # Initially, pad_token_id is set to 0, which is the same ID as the "!" token.
+    # Using pad_token_id for a commonly used token is not ideal.
+    # Additionally, it does not align well with the data collator in the TRL library.
+    # Therefore, it has been changed to the value used in rabbit's tokenizer.
+    tokenizer.pad_token_id = 128001
 
 
 def load_causal_model(model_name: str, torch_dtype: torch.dtype = torch.bfloat16, load_in_4bit: bool = False, **kwargs):
@@ -71,3 +75,37 @@ def load_mock_model(vocab_size: int = 128000) -> LlamaForCausalLM:
     )
 
     return LlamaForCausalLM(config)
+
+
+def load_unsloth_model(
+    model_name: str, gpu_memory_utilization: float = 0.9, use_lora: bool = True, max_seq_length: int = 2048
+):
+    from unsloth import FastLanguageModel
+
+    model_dir = get_model_dir(model_name)
+
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_dir.as_posix(),
+        load_in_4bit=False,
+        gpu_memory_utilization=gpu_memory_utilization,
+        random_state=42,
+        local_files_only=True,
+    )
+
+    if model_name == MODEL_NAMES["varco"]:
+        fix_varco_tokenizer(tokenizer)
+
+    if use_lora:
+        model = FastLanguageModel.get_peft_model(
+            model=model, r=32, lora_alpha=64, random_state=42, max_seq_length=max_seq_length
+        )
+
+    return model, tokenizer
+
+
+def save_peft_model(model, tokenizer, save_path) -> None:
+    model.save_pretrained_merged(
+        save_path,
+        tokenizer,
+        save_method="merged_16bit",
+    )
