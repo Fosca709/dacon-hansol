@@ -78,7 +78,12 @@ def load_mock_model(vocab_size: int = 128000) -> LlamaForCausalLM:
 
 
 def load_unsloth_model(
-    model_name: str, gpu_memory_utilization: float = 0.9, use_lora: bool = True, max_seq_length: int = 2048
+    model_name: str,
+    gpu_memory_utilization: float = 0.9,
+    use_lora: bool = True,
+    max_seq_length: int = 2048,
+    load_in_4bit: bool = False,
+    use_vllm: bool = False,
 ):
     from unsloth import FastLanguageModel
 
@@ -86,8 +91,9 @@ def load_unsloth_model(
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_dir.as_posix(),
-        load_in_4bit=False,
+        load_in_4bit=load_in_4bit,
         gpu_memory_utilization=gpu_memory_utilization,
+        fast_inference=use_vllm,
         random_state=42,
         local_files_only=True,
     )

@@ -95,3 +95,15 @@ def train_val_split() -> tuple[pl.DataFrame, pl.DataFrame]:
     df_val = df[indices]
 
     return df_train, df_val
+
+
+def get_grpo_dataset(df: pl.DataFrame) -> Dataset:
+    df = concat_fields(df)
+    dataset = Dataset.from_polars(df)
+
+    def make_prompt(row):
+        messages = get_zero_shot_messages(row["text"])
+        return {"prompt": messages}
+
+    dataset = dataset.map(make_prompt).remove_columns("text")
+    return dataset
