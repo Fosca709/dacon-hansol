@@ -203,6 +203,7 @@ def grpo_train(
     save_model: bool = True,
     push_to_hub: bool = True,
     debug_mode: bool = True,
+    do_val: bool = False,
     optim: str = "adamw_torch",
 ) -> None:
     save_name = get_save_name(run_name)
@@ -222,7 +223,7 @@ def grpo_train(
         df_train = df_train[:20]
         df_val = df_val[:20]
     train_dataset = get_grpo_dataset(df_train)
-    eval_dataset = get_grpo_dataset(df_val)
+    eval_dataset = get_grpo_config(df_val) if do_val else None
 
     trainer = get_grpo_trainer(
         model=model,
