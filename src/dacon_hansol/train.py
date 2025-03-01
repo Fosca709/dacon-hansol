@@ -203,6 +203,7 @@ def grpo_train(
     save_model: bool = True,
     push_to_hub: bool = True,
     debug_mode: bool = True,
+    optim: str = "adamw_torch",
 ) -> None:
     save_name = get_save_name(run_name)
 
@@ -213,6 +214,7 @@ def grpo_train(
         learning_rate=learning_rate,
         use_vllm=use_vllm,
         max_steps=max_steps,
+        optim=optim,
     )
 
     df_train, df_val = train_val_split()
