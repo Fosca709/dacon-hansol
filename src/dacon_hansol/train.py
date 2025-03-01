@@ -125,6 +125,7 @@ def get_grpo_config(
     learning_rate: float = 5e-6,
     use_vllm: bool = False,
     max_steps: int = -1,
+    optim: str = "adamw_torch",
 ) -> GRPOConfig:
     output_dir = (SAVE_PATH / "temp").as_posix()
     return GRPOConfig(
@@ -151,6 +152,7 @@ def get_grpo_config(
         logging_steps=1,
         save_strategy="no",
         bf16=True,
+        optim=optim,
     )
 
 
