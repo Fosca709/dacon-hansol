@@ -126,6 +126,7 @@ def get_grpo_config(
     use_vllm: bool = False,
     max_steps: int = -1,
     optim: str = "adamw_torch",
+    eval_strategy: str = "epoch",
 ) -> GRPOConfig:
     output_dir = (SAVE_PATH / "temp").as_posix()
     return GRPOConfig(
@@ -137,7 +138,7 @@ def get_grpo_config(
         learning_rate=learning_rate,
         reward_weights=[0.7, 0.3],
         output_dir=output_dir,
-        eval_strategy="epoch",
+        eval_strategy=eval_strategy,
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size,
         gradient_accumulation_steps=accumulation_steps,
@@ -208,6 +209,14 @@ def grpo_train(
 ) -> None:
     save_name = get_save_name(run_name)
 
+    df_train, df_val = train_val_split()
+    if debug_mode:
+        df_train = df_train[:20]
+        df_val = df_val[:20]
+    train_dataset = get_grpo_dataset(df_train)
+    eval_dataset = get_grpo_config(df_val) if do_val else None
+    eval_strategy = "epoch" if do_val else "no"
+
     config = get_grpo_config(
         batch_size=batch_size,
         accumulation_steps=accumulation_stpes,
@@ -216,14 +225,8 @@ def grpo_train(
         use_vllm=use_vllm,
         max_steps=max_steps,
         optim=optim,
+        eval_strategy=eval_strategy,
     )
-
-    df_train, df_val = train_val_split()
-    if debug_mode:
-        df_train = df_train[:20]
-        df_val = df_val[:20]
-    train_dataset = get_grpo_dataset(df_train)
-    eval_dataset = get_grpo_config(df_val) if do_val else None
 
     trainer = get_grpo_trainer(
         model=model,
