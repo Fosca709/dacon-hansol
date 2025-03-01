@@ -214,7 +214,7 @@ def grpo_train(
         df_train = df_train[:20]
         df_val = df_val[:20]
     train_dataset = get_grpo_dataset(df_train)
-    eval_dataset = get_grpo_config(df_val) if do_val else None
+    eval_dataset = get_grpo_dataset(df_val) if do_val else None
     eval_strategy = "epoch" if do_val else "no"
 
     config = get_grpo_config(
