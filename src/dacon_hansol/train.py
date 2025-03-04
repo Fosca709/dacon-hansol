@@ -5,12 +5,14 @@ from datasets import Dataset
 from sentence_transformers import SentenceTransformer
 from transformers import Trainer
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+from transformers.utils.notebook import NotebookProgressCallback, NotebookTrainingTracker
 from trl import DataCollatorForCompletionOnlyLM, GRPOConfig, GRPOTrainer, SFTConfig, SFTTrainer
 
 from . import SAVE_PATH
 from .data import get_grpo_dataset, get_llama_collator, get_trl_dataset, train_val_split
 from .inference import cosine_similarity, jaccard_similarity
 from .model import save_peft_model
+from .optimizer import get_optimizer, get_scheduler, get_training_steps
 from .utils import get_save_name, hf_upload_folder
 
 LOG_PATH = SAVE_PATH / "log"
@@ -122,11 +124,8 @@ def get_grpo_config(
     max_prompt_length: int = 1024,
     max_completion_length: int = 128,
     temperature: float = 0.9,
-    learning_rate: float = 5e-6,
     use_vllm: bool = False,
     max_steps: int = -1,
-    optim: str = "adamw_torch",
-    eval_strategy: str = "epoch",
 ) -> GRPOConfig:
     output_dir = (SAVE_PATH / "temp").as_posix()
     return GRPOConfig(
@@ -135,26 +134,43 @@ def get_grpo_config(
         temperature=temperature,
         max_completion_length=max_completion_length,
         use_vllm=use_vllm,
-        learning_rate=learning_rate,
         reward_weights=[0.7, 0.3],
         output_dir=output_dir,
-        eval_strategy=eval_strategy,
+        eval_strategy="no",
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size,
         gradient_accumulation_steps=accumulation_steps,
         num_train_epochs=1,
         max_steps=max_steps,
-        lr_scheduler_type="cosine",
-        warmup_ratio=0.05,
         max_grad_norm=0.1,
-        weight_decay=0.1,
-        adam_beta1=0.9,
-        adam_beta2=0.99,
         logging_steps=1,
         save_strategy="no",
         bf16=True,
-        optim=optim,
     )
+
+
+class GRPONotebookCallback(NotebookProgressCallback):
+    def __init__(self, print_steps: int = 10):
+        super().__init__()
+        self.print_steps = print_steps
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        self.training_loss = 0
+        self.last_log = 0
+        column_names = ["Step", "Loss", "Reward", "Cosine", "Jaccard", "KL"]
+        self.training_tracker = NotebookTrainingTracker(state.max_steps, column_names)
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if (state.global_step % self.print_steps == 0) and ("loss" in logs):
+            values = {
+                "Step": state.global_step,
+                "Loss": logs["loss"],
+                "Reward": logs["reward"],
+                "Cosine": logs["rewards/cosine_reward"],
+                "Jaccard": logs["rewards/jaccard_reward"],
+                "KL": logs["kl"],
+            }
+            self.training_tracker.write_line(values)
 
 
 def get_grpo_trainer(
@@ -163,7 +179,14 @@ def get_grpo_trainer(
     embed_model: SentenceTransformer,
     config: GRPOConfig,
     train_dataset: Dataset,
-    eval_dataset: Dataset,
+    training_steps: int,
+    learning_rate: float = 6e-5,
+    warmup_ratio: float = 0.1,
+    optimizer_name: str = "adamw",
+    scheduler_name: str = "cosine",
+    print_steps: int = 10,
+    optimizer_kwargs=None,
+    scheduler_kwargs=None,
 ) -> GRPOTrainer:
     def jaccard_reward(completions, answer, **kwargs):
         comp_texts = [c[0]["content"] for c in completions]
@@ -179,14 +202,34 @@ def get_grpo_trainer(
         rewards = cosine_similarity(ans_embed, comp_embed).clip(min=0).tolist()
         return rewards
 
-    return GRPOTrainer(
+    if optimizer_kwargs is None:
+        optimizer_kwargs = dict()
+    if scheduler_kwargs is None:
+        scheduler_kwargs = dict()
+    optimizer = get_optimizer(model=model, optimizer_name=optimizer_name, lr=learning_rate, **optimizer_kwargs)
+    scheduler = get_scheduler(
+        optimizer=optimizer,
+        scheduler_name=scheduler_name,
+        training_steps=training_steps,
+        warmup_ratio=warmup_ratio,
+        **scheduler_kwargs,
+    )
+
+    trainer = GRPOTrainer(
         model=model,
         reward_funcs=[cosine_reward, jaccard_reward],
         args=config,
         train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
         processing_class=tokenizer,
+        optimizers=(optimizer, scheduler),
+        callbacks=[GRPONotebookCallback(print_steps=print_steps)],
     )
+
+    for callback in trainer.callback_handler.callbacks:
+        if callback.__class__.__name__ == "NotebookProgressCallback":
+            trainer.remove_callback(callback)
+
+    return trainer
 
 
 # use `patch_unsloth_grpo` before calling the function and the model
@@ -196,37 +239,39 @@ def grpo_train(
     embed_model: SentenceTransformer,
     run_name: str,
     batch_size: int = 1,
-    accumulation_stpes: int = 1,
+    accumulation_steps: int = 1,
     num_generations: int = 8,
-    learning_rate: float = 6e-5,
-    use_vllm: bool = False,
     max_steps: int = -1,
+    learning_rate: float = 6e-5,
+    warmup_ratio: float = 0.1,
+    optimizer_name: str = "adamw",
+    scheduler_name: str = "cosine",
+    use_vllm: bool = False,
     save_model: bool = True,
     push_to_hub: bool = True,
     debug_mode: bool = True,
-    do_val: bool = False,
-    optim: str = "adamw_torch",
+    print_steps: int = 10,
+    optimizer_kwargs=None,
+    scheduler_kwargs=None,
 ) -> None:
     save_name = get_save_name(run_name)
 
-    df_train, df_val = train_val_split()
+    df_train, _ = train_val_split()
     if debug_mode:
         df_train = df_train[:20]
-        df_val = df_val[:20]
     train_dataset = get_grpo_dataset(df_train)
-    eval_dataset = get_grpo_dataset(df_val) if do_val else None
-    eval_strategy = "epoch" if do_val else "no"
 
     config = get_grpo_config(
         batch_size=batch_size,
-        accumulation_steps=accumulation_stpes,
+        accumulation_steps=accumulation_steps,
         num_generations=num_generations,
-        learning_rate=learning_rate,
         use_vllm=use_vllm,
         max_steps=max_steps,
-        optim=optim,
-        eval_strategy=eval_strategy,
     )
+    if max_steps == -1:
+        training_steps = get_training_steps(len(train_dataset), batch_size * accumulation_steps)
+    else:
+        training_steps = max_steps
 
     trainer = get_grpo_trainer(
         model=model,
@@ -234,7 +279,14 @@ def grpo_train(
         embed_model=embed_model,
         config=config,
         train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
+        training_steps=training_steps,
+        learning_rate=learning_rate,
+        warmup_ratio=warmup_ratio,
+        optimizer_name=optimizer_name,
+        scheduler_name=scheduler_name,
+        print_steps=print_steps,
+        optimizer_kwargs=optimizer_kwargs,
+        scheduler_kwargs=scheduler_kwargs,
     )
     trainer.train()
     save_log(trainer, save_name)
