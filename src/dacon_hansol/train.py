@@ -126,6 +126,7 @@ def get_grpo_config(
     temperature: float = 0.9,
     use_vllm: bool = False,
     max_steps: int = -1,
+    seed: int = 42,
 ) -> GRPOConfig:
     output_dir = (SAVE_PATH / "temp").as_posix()
     return GRPOConfig(
@@ -146,6 +147,8 @@ def get_grpo_config(
         logging_steps=1,
         save_strategy="no",
         bf16=True,
+        seed=seed,
+        data_seed=seed,
     )
 
 
@@ -157,7 +160,7 @@ class GRPONotebookCallback(NotebookProgressCallback):
     def on_train_begin(self, args, state, control, **kwargs):
         self.training_loss = 0
         self.last_log = 0
-        column_names = ["Step", "Loss", "Reward", "Cosine", "Jaccard", "KL"]
+        column_names = ["Step", "Loss", "Reward", "Cosine", "Jaccard", "KL", "Grad Norm"]
         self.training_tracker = NotebookTrainingTracker(state.max_steps, column_names)
 
     def on_log(self, args, state, control, logs=None, **kwargs):
@@ -169,6 +172,7 @@ class GRPONotebookCallback(NotebookProgressCallback):
                 "Cosine": logs["rewards/cosine_reward"],
                 "Jaccard": logs["rewards/jaccard_reward"],
                 "KL": logs["kl"],
+                "Grad Norm": logs["grad_norm"],
             }
             self.training_tracker.write_line(values)
 
@@ -249,8 +253,9 @@ def grpo_train(
     use_vllm: bool = False,
     save_model: bool = True,
     push_to_hub: bool = True,
-    debug_mode: bool = True,
+    debug_mode: bool = False,
     print_steps: int = 10,
+    seed: int = 42,
     optimizer_kwargs=None,
     scheduler_kwargs=None,
 ) -> None:
@@ -267,6 +272,7 @@ def grpo_train(
         num_generations=num_generations,
         use_vllm=use_vllm,
         max_steps=max_steps,
+        seed=seed,
     )
     if max_steps == -1:
         training_steps = get_training_steps(len(train_dataset), batch_size * accumulation_steps)
