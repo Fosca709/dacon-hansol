@@ -281,3 +281,42 @@ def validate(
 
     print(f"Average score: {df_score['score'].mean()}")
     return df_score
+
+
+def make_multiple_zero_shot_samples(
+    model, df: pl.DataFrame, num_generations: int, temperature: float = 0.9, top_p: float = 1, **sampling_kwargs
+) -> pl.DataFrame:
+    from vllm import LLM, SamplingParams
+
+    assert isinstance(model, LLM)
+
+    df_cat = concat_fields(df)
+    texts = df_cat["text"].to_list()
+    conversations = [get_zero_shot_messages(text) for text in texts]
+
+    sampling_params = SamplingParams(n=num_generations, temperature=temperature, top_p=top_p, **sampling_kwargs)
+
+    outputs = model.chat(messages=conversations, sampling_params=sampling_params)
+    outputs = [[o2.text for o2 in o1.outputs] for o1 in outputs]
+    outputs = pl.Series(name="preds", values=outputs, dtype=pl.List(pl.String))
+
+    df_preds = df_cat.select(df["ID"], pl.all(), outputs)
+    return df_preds
+
+
+def make_scores_of_multiple_preds(
+    df_preds: pl.DataFrame, embed_model: Optional[SentenceTransformer] = None
+) -> pl.DataFrame:
+    if embed_model is None:
+        embed_model = load_ko_sbert_sts()
+
+    df_explode = df_preds.explode(columns="preds")
+    df_ref = df_explode.select(pl.all().exclude("preds"))
+    df_pred = df_explode["preds"].alias("pred")
+
+    df_score = make_scores(df_ref, df_pred, embed_model)
+    df_score = df_score.group_by("ID", "text", "answer", maintain_order=True).agg(
+        pl.col("pred").alias("preds"), "jaccard", "cosine", "score"
+    )
+
+    return df_score
