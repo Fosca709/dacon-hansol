@@ -71,42 +71,15 @@ def load_vllm_chat_model(model_name: str):
 
 def load_mock_model(vocab_size: int = 128000) -> LlamaForCausalLM:
     config = LlamaConfig(
-        vocab_size=vocab_size, hidden_size=128, intermediate_size=256, num_hidden_layers=1, num_attention_heads=2
+        vocab_size=vocab_size,
+        hidden_size=128,
+        intermediate_size=256,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        torch_dtype="bfloat16",
     )
 
     return LlamaForCausalLM(config)
-
-
-def load_unsloth_model(
-    model_name: str,
-    gpu_memory_utilization: float = 0.9,
-    use_lora: bool = True,
-    max_seq_length: int = 2048,
-    load_in_4bit: bool = False,
-    use_vllm: bool = False,
-):
-    from unsloth import FastLanguageModel
-
-    model_dir = get_model_dir(model_name)
-
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_dir.as_posix(),
-        load_in_4bit=load_in_4bit,
-        gpu_memory_utilization=gpu_memory_utilization,
-        fast_inference=use_vllm,
-        random_state=42,
-        local_files_only=True,
-    )
-
-    if model_name == MODEL_NAMES["varco"]:
-        fix_varco_tokenizer(tokenizer)
-
-    if use_lora:
-        model = FastLanguageModel.get_peft_model(
-            model=model, r=32, lora_alpha=64, random_state=42, max_seq_length=max_seq_length
-        )
-
-    return model, tokenizer
 
 
 def save_peft_model(model, tokenizer, save_path) -> None:

@@ -52,3 +52,8 @@ def hf_upload_folder(folder_path: Path) -> None:
         folder_path=folder_path,
         path_in_repo=folder_path.name,
     )
+
+
+def hf_upload_file(file_path: Path, folder_in_repo: str = "") -> None:
+    api = HfApi(token=HF_API_TOKEN)
+    api.upload_file(path_or_fileobj=file_path, path_in_repo=f"{folder_in_repo}/{file_path.name}", repo_id=HF_REPO_NAME)

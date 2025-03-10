@@ -19,6 +19,7 @@ from .data import (
     load_data,
 )
 from .model import load_ko_sbert_sts
+from .utils import hf_upload_file
 
 
 def naive_zero_shot(
@@ -318,5 +319,45 @@ def make_scores_of_multiple_preds(
     df_score = df_score.group_by("ID", "text", "answer", maintain_order=True).agg(
         pl.col("pred").alias("preds"), "jaccard", "cosine", "score"
     )
+
+    return df_score
+
+
+def make_reward_dataset(
+    model,
+    df: pl.DataFrame,
+    data_name: str = "reward",
+    embed_model: Optional[SentenceTransformer] = None,
+    num_generations: int = 8,
+    temperature: float = 0.9,
+    top_p: float = 0.95,
+    save_dataset: bool = True,
+    push_to_hub: bool = True,
+    **sampling_kwargs,
+) -> pl.DataFrame:
+    from vllm import LLM
+
+    assert isinstance(model, LLM)
+
+    df_preds = make_multiple_zero_shot_samples(
+        model=model, df=df, num_generations=num_generations, temperature=temperature, top_p=top_p, **sampling_kwargs
+    )
+
+    if embed_model is None:
+        embed_model = load_ko_sbert_sts()
+
+    df_score = make_scores_of_multiple_preds(df_preds=df_preds, embed_model=embed_model)
+    df_score = (
+        df_score.explode("preds", "jaccard", "cosine", "score")
+        .select(pl.all().exclude("answer"))
+        .rename({"preds": "pred"})
+    )
+
+    if save_dataset:
+        save_path = SAVE_PATH / "data" / f"{data_name}.parquet"
+        df_score.write_parquet(save_path)
+
+        if push_to_hub:
+            hf_upload_file(file_path=save_path, folder_in_repo="data")
 
     return df_score
