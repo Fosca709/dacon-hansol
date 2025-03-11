@@ -230,6 +230,7 @@ class GRPONotebookCallback(NotebookProgressCallback):
 def patch_grpo_trainer_with_ref():
     from contextlib import nullcontext
 
+    import torch.nn.functional as F
     from transformers import Trainer
     from trl.trainer.grpo_trainer import (
         GRPOTrainer,
@@ -334,11 +335,21 @@ def patch_grpo_trainer_with_ref():
             answer_ids = self.processing_class.encode(answer, add_special_tokens=False, truncation=False)
             answer_ids = answer_ids[-self.max_completion_length + 1 :]
             answer_ids.append(self.processing_class.eos_token_id)
-            if len(answer_ids) < self.max_completion_length:
+
+            completion_length = completion_ids.size(-1)
+            answer_length = len(answer_ids)
+
+            if answer_length <= completion_length:
                 answer_ids.extend(
-                    [self.processing_class.pad_token_id for _ in range(self.max_completion_length - len(answer_ids))]
+                    [self.processing_class.pad_token_id for _ in range(completion_length - answer_length)]
                 )
-            completion_ids[-1] = torch.tensor(answer_ids, device=completion_ids.device)
+            else:
+                completion_ids = F.pad(
+                    completion_ids, (0, answer_length - completion_length), value=self.processing_class.pad_token_id
+                )
+
+            answer_ids = torch.tensor(answer_ids, device=completion_ids.device)
+            completion_ids[-1] = answer_ids
 
             # Mask everything after the first EOS token
             is_eos = completion_ids == self.processing_class.eos_token_id
