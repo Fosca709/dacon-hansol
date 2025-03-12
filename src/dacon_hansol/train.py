@@ -494,9 +494,18 @@ def get_grpo_trainer(
     if check_unsloth:
         assert "Unsloth" in GRPOTrainer.__name__
 
+    def dampening_rewards(rewards, t=0.7):
+        r = max(rewards[:-1])
+        rewards[-1] = t * r + (1 - t) * 1.0
+        return rewards
+
     def jaccard_reward(completions, answer, **kwargs):
         comp_texts = [c[0]["content"] for c in completions]
         rewards = [jaccard_similarity(t1, t2) for t1, t2 in zip(answer, comp_texts)]
+
+        if use_ref_as_sample:
+            rewards = dampening_rewards(rewards)
+
         return rewards
 
     def cosine_reward(completions, answer, **kwargs):
@@ -506,6 +515,10 @@ def get_grpo_trainer(
         ans_embed = embed_model.encode(answer, show_progress_bar=False)
 
         rewards = cosine_similarity(ans_embed, comp_embed).clip(min=0).tolist()
+
+        if use_ref_as_sample:
+            rewards = dampening_rewards(rewards)
+
         return rewards
 
     if use_ref_as_sample:
