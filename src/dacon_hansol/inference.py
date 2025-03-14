@@ -285,7 +285,13 @@ def validate(
 
 
 def make_multiple_zero_shot_samples(
-    model, df: pl.DataFrame, num_generations: int, temperature: float = 0.9, top_p: float = 1, **sampling_kwargs
+    model,
+    df: pl.DataFrame,
+    num_generations: int,
+    temperature: float = 0.9,
+    top_p: float = 1,
+    max_new_tokens: int = 128,
+    **sampling_kwargs,
 ) -> pl.DataFrame:
     from vllm import LLM, SamplingParams
 
@@ -295,7 +301,9 @@ def make_multiple_zero_shot_samples(
     texts = df_cat["text"].to_list()
     conversations = [get_zero_shot_messages(text) for text in texts]
 
-    sampling_params = SamplingParams(n=num_generations, temperature=temperature, top_p=top_p, **sampling_kwargs)
+    sampling_params = SamplingParams(
+        n=num_generations, temperature=temperature, top_p=top_p, max_tokens=max_new_tokens, **sampling_kwargs
+    )
 
     outputs = model.chat(messages=conversations, sampling_params=sampling_params)
     outputs = [[o2.text for o2 in o1.outputs] for o1 in outputs]
