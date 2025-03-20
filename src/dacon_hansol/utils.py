@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from huggingface_hub import HfApi, snapshot_download
+from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 
 from . import SAVE_PATH
 
@@ -57,3 +57,9 @@ def hf_upload_folder(folder_path: Path) -> None:
 def hf_upload_file(file_path: Path, folder_in_repo: str = "") -> None:
     api = HfApi(token=HF_API_TOKEN)
     api.upload_file(path_or_fileobj=file_path, path_in_repo=f"{folder_in_repo}/{file_path.name}", repo_id=HF_REPO_NAME)
+
+
+def download_reward_dataset() -> None:
+    hf_hub_download(
+        repo_id=HF_REPO_NAME, filename="data/reward.parquet", local_dir=SAVE_PATH / "data", token=HF_API_TOKEN
+    )

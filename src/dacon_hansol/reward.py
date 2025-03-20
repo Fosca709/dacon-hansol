@@ -21,7 +21,7 @@ from tqdm.auto import tqdm
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from . import SAVE_PATH
-from .data import get_zero_shot_messages
+from .data import fold_reward_dataframe, get_zero_shot_messages
 from .model import load_causal_model, load_tokenizer
 from .optimizer import get_cosine_scheduler
 
@@ -467,18 +467,6 @@ def validate(
         sk=df_rank["score_kendall"].mean(),
     )
     logger.opt(colors=True).info(message)
-
-
-def fold_reward_dataframe(df_reward: pl.DataFrame) -> pl.DataFrame:
-    columns_fixed = ["ID", "text"]
-    columns_fold = [col for col in df_reward.columns if col not in columns_fixed]
-    return df_reward.group_by(*columns_fixed, maintain_order=True).agg(*columns_fold)
-
-
-def unfold_reward_dataframe(df_fold: pl.DataFrame) -> pl.DataFrame:
-    columns_fixed = ["ID", "text"]
-    columns_unfold = [col for col in df_fold.columns if col not in columns_fixed]
-    return df_fold.explode(*columns_unfold)
 
 
 def compute_rank_correlations(df_with_preds: pl.DataFrame) -> pl.DataFrame:

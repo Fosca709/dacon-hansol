@@ -1,5 +1,5 @@
 import os
-from typing import Literal
+from typing import Literal, Optional
 
 import numpy as np
 import polars as pl
@@ -9,6 +9,7 @@ from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from trl import DataCollatorForCompletionOnlyLM, apply_chat_template
 
 from . import SAVE_PATH
+from .utils import download_reward_dataset
 
 DATA_PATH = SAVE_PATH / "data"
 
@@ -107,3 +108,49 @@ def get_grpo_dataset(df: pl.DataFrame) -> Dataset:
 
     dataset = dataset.map(make_prompt).remove_columns("text")
     return dataset
+
+
+def fold_reward_dataframe(df_reward: pl.DataFrame) -> pl.DataFrame:
+    columns_fixed = ["ID", "text"]
+    columns_fold = [col for col in df_reward.columns if col not in columns_fixed]
+    return df_reward.group_by(*columns_fixed, maintain_order=True).agg(*columns_fold)
+
+
+def unfold_reward_dataframe(df_fold: pl.DataFrame) -> pl.DataFrame:
+    columns_fixed = ["ID", "text"]
+    columns_unfold = [col for col in df_fold.columns if col not in columns_fixed]
+    return df_fold.explode(*columns_unfold)
+
+
+def load_reward_dataset() -> pl.DataFrame:
+    data_path = SAVE_PATH / "data" / "data" / "reward.parquet"
+    if not os.path.exists(data_path):
+        download_reward_dataset()
+
+    return pl.read_parquet(data_path)
+
+
+def train_val_split_for_reward(
+    df_reward: pl.DataFrame,
+    train_size: Optional[int] = None,
+    test_size: Optional[int] = None,
+    seed: int = 42,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    df_fold = fold_reward_dataframe(df_reward)
+
+    indices = make_split_indices()
+    set_indices = set(indices)
+    train_indices = [i for i in range(len(df_fold)) if i not in set_indices]
+
+    df_train = df_fold[train_indices]
+    df_val = df_fold[indices]
+
+    if train_size is not None:
+        df_train = df_train.sample(n=train_size, seed=seed)
+    if test_size is not None:
+        df_val = df_val.sample(n=test_size, seed=seed)
+
+    df_train = unfold_reward_dataframe(df_train)
+    df_val = unfold_reward_dataframe(df_val)
+
+    return df_train, df_val
