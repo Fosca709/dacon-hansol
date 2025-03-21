@@ -45,9 +45,9 @@ def get_save_name(run_name: str) -> str:
     return f"{get_date()}_{run_name}"
 
 
-def hf_upload_folder(folder_path: Path, *kwargs) -> None:
+def hf_upload_folder(folder_path: Path, **kwargs) -> None:
     api = HfApi(token=HF_API_TOKEN)
-    api.upload_folder(repo_id=HF_REPO_NAME, folder_path=folder_path, path_in_repo=folder_path.name, *kwargs)
+    api.upload_folder(repo_id=HF_REPO_NAME, folder_path=folder_path, path_in_repo=folder_path.name, **kwargs)
 
 
 def hf_upload_file(file_path: Path, folder_in_repo: str = "") -> None:
