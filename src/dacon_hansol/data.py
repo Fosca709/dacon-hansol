@@ -110,14 +110,18 @@ def get_grpo_dataset(df: pl.DataFrame) -> Dataset:
     return dataset
 
 
-def fold_reward_dataframe(df_reward: pl.DataFrame) -> pl.DataFrame:
+def fold_reward_dataframe(df_reward: pl.DataFrame, fixed_columns: list[str] | None = None) -> pl.DataFrame:
     columns_fixed = ["ID", "text"]
+    if fixed_columns is not None:
+        columns_fixed.extend(fixed_columns)
     columns_fold = [col for col in df_reward.columns if col not in columns_fixed]
     return df_reward.group_by(*columns_fixed, maintain_order=True).agg(*columns_fold)
 
 
-def unfold_reward_dataframe(df_fold: pl.DataFrame) -> pl.DataFrame:
+def unfold_reward_dataframe(df_fold: pl.DataFrame, fixed_columns: list[str] | None = None) -> pl.DataFrame:
     columns_fixed = ["ID", "text"]
+    if fixed_columns is not None:
+        columns_fixed.extend(fixed_columns)
     columns_unfold = [col for col in df_fold.columns if col not in columns_fixed]
     return df_fold.explode(*columns_unfold)
 

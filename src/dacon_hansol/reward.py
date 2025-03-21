@@ -5,7 +5,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Optional, Self
 
 import numpy as np
 import polars as pl
@@ -21,9 +21,11 @@ from tqdm.auto import tqdm
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from . import SAVE_PATH
-from .data import fold_reward_dataframe, get_zero_shot_messages
+from .data import fold_reward_dataframe, get_zero_shot_messages, unfold_reward_dataframe
+from .inference import make_multiple_zero_shot_samples
 from .model import load_causal_model, load_tokenizer
 from .optimizer import get_cosine_scheduler
+from .utils import get_model_dir
 
 logger.remove()
 logger.add(
@@ -95,14 +97,8 @@ class RewardModel(nn.Module):
     def save_model(self, model_name: str) -> None:
         model_path = SAVE_PATH / "model" / model_name
 
-        if self.is_peft:
-            self.causal_lm.save_pretrained(model_path)
-            self.causal_lm.base_model.save_pretrained(model_path)
-        else:
-            self.causal_lm.save_pretrained(model_path)
-
+        self.causal_lm.save_pretrained(model_path)
         self.tokenizer.save_pretrained(model_path)
-
         safetensors.torch.save_model(self.value_head, filename=model_path / "v_head.safetensors")
 
     @classmethod
@@ -120,13 +116,16 @@ class RewardModel(nn.Module):
         return value_head
 
     @classmethod
-    def from_pretrained(cls, model_name: str) -> Self:
+    def from_pretrained(cls, model_name: str, base_model_name: Optional[str] = None) -> Self:
         model_path = SAVE_PATH / "model" / model_name
         is_peft = False
 
+        if base_model_name is None:
+            base_model_name = model_name
+
         logger.info("Loading causal_lm and tokenizer")
-        causal_lm = load_causal_model(model_name)
-        tokenizer = load_tokenizer(model_name)
+        causal_lm = load_causal_model(base_model_name)
+        tokenizer = load_tokenizer(base_model_name)
 
         if os.path.exists(model_path / "adapter_model.safetensors"):
             logger.info("Adapter detected. Loading PEFT model")
@@ -496,3 +495,107 @@ def compute_rank_correlations(df_with_preds: pl.DataFrame) -> pl.DataFrame:
     df_rank = df_fold.select(*exprs_compute_rank).select(*exprs_unnest)
 
     return df_rank
+
+
+def bon_generate(
+    model,
+    df: pl.DataFrame,
+    num_generations: int,
+    temperature: float = 1.5,
+    top_p: float = 0.95,
+    max_new_tokens=128,
+    **sampling_kwargs,
+) -> pl.DataFrame:
+    df_generated = make_multiple_zero_shot_samples(
+        model=model,
+        df=df,
+        num_generations=num_generations,
+        temperature=temperature,
+        top_p=top_p,
+        max_new_tokens=max_new_tokens,
+        **sampling_kwargs,
+    )
+    df_generated.write_parquet(SAVE_PATH / "preds.parquet")
+    return df_generated
+
+
+def bon_predict_rewards(
+    df_generated: pl.DataFrame,
+    reward_model_name: str,
+    base_model_name: Optional[str] = None,
+    max_lora_rank: int = 32,
+) -> pl.DataFrame:
+    if base_model_name is None:
+        base_model_name = reward_model_name
+    base_model_path = get_model_dir(base_model_name)
+    reward_model_path = get_model_dir(reward_model_name)
+
+    tokenizer = load_tokenizer(base_model_name)
+
+    fixed_column = None
+    if "answer" in df_generated:
+        fixed_column = ["answer"]
+    logger.info("Process data")
+    df_unfold = unfold_reward_dataframe(df_generated, fixed_columns=fixed_column)
+
+    def make_message(row):
+        message = get_zero_shot_messages(row["text"])
+        message.append({"role": "assistant", "content": row["preds"]})
+
+        return tokenizer.apply_chat_template(message, tokenize=False)
+
+    df_messages = df_unfold.select(
+        pl.struct("text", "preds").map_elements(make_message, return_dtype=pl.String).alias("message")
+    )
+    messages = df_messages["message"].to_list()
+
+    from vllm import LLM
+    from vllm.config import PoolerConfig
+    from vllm.lora.request import LoRARequest
+
+    logger.info("Load base model on vllm")
+    pooler_config = PoolerConfig(pooling_type="LAST", normalize=False, softmax=False)
+    model = LLM(
+        model=base_model_path.as_posix(),
+        task="embed",
+        enable_lora=True,
+        max_lora_rank=max_lora_rank,
+        override_pooler_config=pooler_config,
+    )
+    lora_request = LoRARequest(lora_name=reward_model_name, lora_int_id=1, lora_path=reward_model_path.as_posix())
+    outputs = model.embed(messages, lora_request=lora_request)
+    embeddings = [out.outputs.embedding for out in outputs]
+
+    logger.info("Load value head")
+    hidden_size = len(embeddings[0])
+    value_head = ValueHead(hidden_size=hidden_size)
+    v_head_path = reward_model_path / "v_head.safetensors"
+    v_head_state_dict = safetensors.torch.load_file(v_head_path)
+    value_head.load_state_dict(v_head_state_dict)
+
+    embeddings = torch.tensor(embeddings)
+    with torch.no_grad():
+        rewards = value_head(embeddings)
+    rewards = rewards.numpy()
+
+    pred_cosine = pl.Series(name="pred_cosine", values=rewards[:, 0])
+    pred_jaccard = pl.Series(name="pred_jaccard", values=rewards[:, 1])
+    pred_score = (0.7 * pred_cosine.clip(lower_bound=0) + 0.3 * pred_jaccard.clip(lower_bound=0)).alias("pred_score")
+    df_unfold_with_score = df_unfold.with_columns(pred_cosine, pred_jaccard, pred_score)
+    df_with_score = fold_reward_dataframe(df_unfold_with_score, fixed_columns=["answer"])
+    df_with_score.write_parquet("preds.parquet")
+
+    return df_with_score
+
+
+def choose_best_preds(df_preds: pl.DataFrame, column: Literal["cosine", "jaccard", "score"]) -> pl.Series:
+    column = f"pred_{column}"
+    choice_expr = pl.col("pred_cosine").list.arg_max().alias("choice")
+
+    def choice(row):
+        return row["preds"][row["choice"]]
+
+    df_pred = df_preds.select(
+        pl.struct(pl.col("preds"), choice_expr).map_elements(choice, return_dtype=pl.String).alias("pred")
+    )["pred"]
+    return df_pred
