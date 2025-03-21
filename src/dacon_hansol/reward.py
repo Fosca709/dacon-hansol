@@ -590,7 +590,7 @@ def bon_predict_rewards(
 
 def choose_best_preds(df_preds: pl.DataFrame, column: Literal["cosine", "jaccard", "score"]) -> pl.Series:
     column = f"pred_{column}"
-    choice_expr = pl.col("pred_cosine").list.arg_max().alias("choice")
+    choice_expr = pl.col(column).list.arg_max().alias("choice")
 
     def choice(row):
         return row["preds"][row["choice"]]
