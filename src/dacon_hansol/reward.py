@@ -583,7 +583,7 @@ def bon_predict_rewards(
     pred_score = (0.7 * pred_cosine.clip(lower_bound=0) + 0.3 * pred_jaccard.clip(lower_bound=0)).alias("pred_score")
     df_unfold_with_score = df_unfold.with_columns(pred_cosine, pred_jaccard, pred_score)
     df_with_score = fold_reward_dataframe(df_unfold_with_score, fixed_columns=fixed_column)
-    df_with_score.write_parquet("preds.parquet")
+    df_with_score.write_parquet(SAVE_PATH / "preds.parquet")
 
     return df_with_score
 
