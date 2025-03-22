@@ -336,7 +336,7 @@ class RewardMetricLogger:
         message_format = (
             "<{color}>{level} Metric on Step {step}:"
             "Loss {loss:.6f} | Top1 Diff {top1_diff:.6f} "
-            "| Spearman {spearman:.6f} | Score MSE {kendall:.6f}</{color}>"
+            "| Spearman {spearman:.6f} | Kendall {kendall:.6f}</{color}>"
         )
         color = "blue" if self.level == "train" else "red"
         message = message_format.format(
