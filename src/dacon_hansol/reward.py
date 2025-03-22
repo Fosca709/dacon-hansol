@@ -228,6 +228,11 @@ def bt_loss_with_target_reward(rewards, targets, scale=20.0, max_t=10.0):
     return -torch.log(exp[0] / exp.sum())
 
 
+def listmle(rewards, **kwargs):
+    rewards = torch.flip(rewards, dims=(0,))
+    return (torch.logcumsumexp(rewards, dim=0) - rewards).mean()
+
+
 def encode_reward_dataframe(df_reward: pl.DataFrame, tokenizer: PreTrainedTokenizerBase) -> Dataset:
     def make_message(row):
         message = get_zero_shot_messages(row["text"])
@@ -359,9 +364,8 @@ def train(
     warmup_ratio: float = 0.1,
     max_grad_norm: float = 1.0,
     print_steps: int = 10,
-    scale: float = 20.0,
-    max_t: float = 10.0,
     seed: int = 42,
+    loss_fn=None,
 ) -> None:
     model.train()
 
@@ -371,7 +375,8 @@ def train(
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     scheduler = get_cosine_scheduler(optimizer=optimizer, training_steps=len(train_dataset), warmup_ratio=warmup_ratio)
 
-    loss_fn = PRORankingLoss(scale=scale, max_t=max_t)
+    if loss_fn is None:
+        loss_fn = PRORankingLoss()
 
     train_logger = RewardMetricLogger(level="train", run_name=run_name)
 
@@ -390,7 +395,7 @@ def train(
         attention_mask = attention_mask[indices]
 
         output = model(input_ids=input_ids, attention_mask=attention_mask)
-        loss = loss_fn(output, score)
+        loss = loss_fn(rewards=output, targets=score)
 
         # log train metrics
         train_logger.update_and_log(output, score, loss.item(), log=True)
@@ -436,7 +441,7 @@ def validate(run_name: str, model: RewardModel, val_dataset: Dataset, scale: flo
         attention_mask = attention_mask[indices]
 
         output = model(input_ids=input_ids, attention_mask=attention_mask)
-        loss = loss_fn(output, score)
+        loss = loss_fn(rewards=output, targets=score)
 
         val_logger.update_and_log(output, score, loss.item(), log=True)
 
