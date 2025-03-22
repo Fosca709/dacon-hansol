@@ -379,7 +379,17 @@ def train(
     for idx, batch in enumerate(train_dataset):
         batch = {k: v.to(model.device) for k, v in batch.items()}
         score = batch["score"]
-        output = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
+        input_ids = batch["input_ids"]
+        attention_mask = batch["attention_mask"]
+
+        # Rearrange the data in descending order based on scores
+        score_sorted = torch.sort(score, descending=True)
+        score = score_sorted.values
+        indices = score_sorted.indices
+        input_ids = input_ids[indices]
+        attention_mask = attention_mask[indices]
+
+        output = model(input_ids=input_ids, attention_mask=attention_mask)
         loss = loss_fn(output, score)
 
         # log train metrics
@@ -415,7 +425,17 @@ def validate(run_name: str, model: RewardModel, val_dataset: Dataset, scale: flo
     for batch in val_dataset:
         batch = {k: v.to(model.device) for k, v in batch.items()}
         score = batch["score"]
-        output = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
+        input_ids = batch["input_ids"]
+        attention_mask = batch["attention_mask"]
+
+        # Rearrange the data in descending order based on scores
+        score_sorted = torch.sort(score, descending=True)
+        score = score_sorted.values
+        indices = score_sorted.indices
+        input_ids = input_ids[indices]
+        attention_mask = attention_mask[indices]
+
+        output = model(input_ids=input_ids, attention_mask=attention_mask)
         loss = loss_fn(output, score)
 
         val_logger.update_and_log(output, score, loss.item(), log=True)
