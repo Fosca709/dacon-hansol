@@ -3,7 +3,6 @@ import os
 import sys
 from collections import OrderedDict
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from typing import Any, Literal, Optional, Self
 
@@ -16,7 +15,6 @@ from datasets import Dataset
 from loguru import logger
 from peft import PeftModel
 from scipy.stats import kendalltau, spearmanr
-from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
@@ -55,7 +53,7 @@ class ValueHead(nn.Module):
         super().__init__()
         self.head = nn.Sequential(
             OrderedDict(
-                [("fc1", nn.Linear(hidden_size, hidden_size)), ("act", nn.SiLU()), ("fc2", nn.Linear(hidden_size, 2))]
+                [("fc1", nn.Linear(hidden_size, hidden_size)), ("act", nn.SiLU()), ("fc2", nn.Linear(hidden_size, 1))]
             )
         )
 
@@ -63,7 +61,7 @@ class ValueHead(nn.Module):
         if hidden_states.dtype != self.head.fc1.weight.dtype:
             hidden_states = hidden_states.to(self.head.fc1.weight.dtype)
 
-        output = self.head(hidden_states)
+        output = self.head(hidden_states).squeeze(-1)
         return output
 
 
@@ -182,46 +180,71 @@ class RewardModel(nn.Module):
                 param.requires_grad = True
 
 
-def encode_reward_dataframe(df_reward: pl.DataFrame, tokenizer: PreTrainedTokenizerBase) -> pl.DataFrame:
-    def tokenize(row):
+class PRORankingLoss(nn.Module):
+    """
+    Ranking loss inspired by 'Preference Ranking Optimization for Human Alignment (https://arxiv.org/abs/2306.17492)'.
+    A more readable (but less efficient) implementation of this loss can be found in `pro_ranking_loss_readable`.
+    """
+
+    def __init__(self, scale=20.0, max_t=10.0):
+        super().__init__()
+        self.scale = scale
+        self.max_t = max_t
+
+    def forward(self, rewards: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        # rewards, targets: 1D tensors sorted in decreasing order
+
+        w = targets[:, None] - targets[None, :]
+
+        diagonal_indices = torch.arange(targets.size(0))
+        right_indices = (diagonal_indices + 1) % (targets.size(0))
+        w[diagonal_indices, diagonal_indices] = w[diagonal_indices, right_indices]
+
+        w = torch.clip(torch.reciprocal(self.scale * w), max=self.max_t, min=0.0)
+        w = w * rewards[None, :]
+
+        mask = torch.tril(torch.ones_like(w), diagonal=-1).bool()
+        w.masked_fill_(mask, float("-inf"))
+
+        log_softmax = torch.diag(torch.log_softmax(w, dim=1))
+        return -log_softmax.sum()
+
+
+def pro_ranking_loss_readable(rewards, targets, scale=20.0, max_t=10.0):
+    return sum(
+        [
+            bt_loss_with_target_reward(rewards[i:], targets[i:], scale=scale, max_t=max_t)
+            for i in range(len(rewards) - 1)
+        ]
+    )
+
+
+def bt_loss_with_target_reward(rewards, targets, scale=20.0, max_t=10.0):
+    t = targets[0] - targets
+    t[0] = t[1]
+    t = torch.clip(torch.reciprocal(scale * t), max=max_t)
+
+    exp = torch.exp(t * rewards)
+    return -torch.log(exp[0] / exp.sum())
+
+
+def encode_reward_dataframe(df_reward: pl.DataFrame, tokenizer: PreTrainedTokenizerBase) -> Dataset:
+    def make_message(row):
         message = get_zero_shot_messages(row["text"])
         message.append({"role": "assistant", "content": row["pred"]})
-        input_ids = tokenizer.apply_chat_template(message)
-        return input_ids
+        message = tokenizer.apply_chat_template(message, tokenize=False)
+        return message
 
-    input_ids_expr = pl.struct("text", "pred").map_elements(tokenize, return_dtype=pl.List(pl.Int64)).alias("input_ids")
-    label_expr = pl.concat_list(pl.col("cosine", "jaccard").cast(pl.List(pl.Float32))).alias("label")
+    df = unfold_reward_dataframe(df_reward)
+    df = df.with_columns(pl.struct("text", "pred").map_elements(make_message, return_dtype=pl.String).alias("message"))
+    df = fold_reward_dataframe(df)
 
-    return df_reward.select(input_ids_expr, label_expr)
+    def tokenize(row):
+        return tokenizer.batch_encode_plus(row["message"], padding=True)
 
-
-class RewardCollator:
-    def __init__(self, tokenizer: PreTrainedTokenizerBase):
-        self.tokenizer = tokenizer
-
-    def __call__(self, features) -> dict[str, torch.Tensor]:
-        return self.tokenizer.pad(encoded_inputs=features, padding=True, return_tensors="pt")
-
-
-def get_reward_dataloader(
-    df_encoded: pl.DataFrame, tokenizer: PreTrainedTokenizerBase, batch_size: int, shuffle: bool
-) -> DataLoader:
-    dataset = Dataset.from_polars(df_encoded)
-    collator = RewardCollator(tokenizer)
-
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=collator)
-
-
-class WeightedMSELoss(nn.Module):
-    def __init__(self, weights=(0.49, 0.09)):
-        super().__init__()
-        self.weights = weights
-
-    def forward(self, input, target):
-        # input, target: [B, 2]
-        w1, w2 = self.weights
-        squared_errors = torch.pow(input - target, 2)
-        return w1 * squared_errors[:, 0].mean() + w2 * squared_errors[:, 1].mean()
+    dataset = Dataset.from_polars(df.select("message", "score"))
+    dataset = dataset.map(tokenize).remove_columns("message")
+    return dataset
 
 
 def get_logger(level: str, run_name: str) -> None:
@@ -237,7 +260,7 @@ def get_logger(level: str, run_name: str) -> None:
         filter=lambda record: record["level"].name == level,
     )
 
-    logger.log(level, "step,loss,cosine_mse,jaccard_mse,score_mse")
+    logger.log(level, "step,loss,top1_diff,spearman,kendall")
 
 
 def get_defaults_from_dataclass(cls) -> dict[str, Any]:
@@ -259,83 +282,61 @@ def get_defaults_from_dataclass(cls) -> dict[str, Any]:
 @dataclass
 class RewardMetricLogger:
     loss: float = 0.0
-    cosine_mse: float = 0.0
-    jaccard_mse: float = 0.0
-    score_mse: float = 0.0
+    top1_diff: float = 0.0
+    spearman: float = 0.0
+    kendall: float = 0.0
     n_samples: int = 0
 
-    def __init__(self, level: str, run_name: str, weights=(0.49, 0.09)):
+    def __init__(self, level: str, run_name: str):
         self.level = level
         self.run_name = run_name
         get_logger(level, run_name)
-
-        self.weights = weights
-
         self.step = 0
-        self.bs = 0
-        self.cos = 0.0
-        self.jac = 0.0
-        self.sc = 0.0
 
     def reset(self):
         defaults = get_defaults_from_dataclass(self.__class__)
         for name, value in defaults.items():
             setattr(self, name, value)
 
-    def compute_step(self, output: torch.Tensor, label: torch.Tensor) -> None:
+    def update_and_log(self, output: torch.Tensor, label: torch.Tensor, loss: float, log: bool = True) -> None:
         output = output.detach().cpu()
         label = label.detach().cpu()
 
         self.step += 1
-        self.bs = output.shape[0]
+        self.n_samples += 1
 
-        squared_error = torch.pow(output - label, 2)
-        self.cos = squared_error[:, 0].sum().item()
-        self.jac = squared_error[:, 1].sum().item()
+        # compute metrics
+        spearman = np.nan_to_num(spearmanr(label, output).statistic, nan=0).item()
+        kendall = np.nan_to_num(kendalltau(label, output).statistic, nan=0).item()
+        top1_diff = (label.max() - label[output.argmax()]).item()
 
-        pred_reward = 0.7 * output[:, 0] + 0.3 * output[:, 1]
-        target_reward = 0.7 * label[:, 0] + 0.3 * label[:, 1]
-        self.sc = torch.sum(torch.pow(pred_reward - target_reward, 2)).item()
+        # log metrics
+        if log:
+            logger.log(self.level, f"{self.step},{loss},{top1_diff},{spearman},{kendall}")
 
-    def update(self) -> None:
-        self.n_samples += self.bs
-        self.cosine_mse += self.cos
-        self.jaccard_mse += self.jac
-
-        w1, w2 = self.weights
-        self.loss += w1 * self.cos + w2 * self.jac
-
-        self.score_mse += self.sc
+        # update metrics
+        self.loss += loss
+        self.top1_diff += top1_diff
+        self.spearman += spearman
+        self.kendall += kendall
 
     def get_metric(self) -> dict[str, float]:
         if self.n_samples == 0:
             raise Exception("No data for compute metrics")
 
         loss = self.loss / self.n_samples
-        cosine_mse = self.cosine_mse / self.n_samples
-        jaccard_mse = self.jaccard_mse / self.n_samples
-        score_mse = self.score_mse / self.n_samples
+        top1_dff = self.top1_diff / self.n_samples
+        spearman = self.spearman / self.n_samples
+        kendall = self.kendall / self.n_samples
 
-        return {"loss": loss, "cosine_mse": cosine_mse, "jaccard_mse": jaccard_mse, "score_mse": score_mse}
-
-    def log(self):
-        step = self.step
-        cosine_mse = self.cos / self.bs
-        jaccard_mse = self.jac / self.bs
-
-        w1, w2 = self.weights
-        loss = w1 * cosine_mse + w2 * jaccard_mse
-
-        score_mse = self.sc / self.bs
-
-        logger.log(self.level, f"{step},{loss},{cosine_mse},{jaccard_mse},{score_mse}")
+        return {"loss": loss, "top1_diff": top1_dff, "spearman": spearman, "kendall": kendall}
 
     def print_log(self):
         metrics = self.get_metric()
         message_format = (
             "<{color}>{level} Metric on Step {step}:"
-            "Loss {loss:.6f} | Cosine MSE {cosine:.6f} "
-            "| Jaccard MSE {jaccard:.6f} | Score MSE {score:.6f}</{color}>"
+            "Loss {loss:.6f} | Top1 Diff {top1_diff:.6f} "
+            "| Spearman {spearman:.6f} | Score MSE {kendall:.6f}</{color}>"
         )
         color = "blue" if self.level == "train" else "red"
         message = message_format.format(
@@ -343,9 +344,9 @@ class RewardMetricLogger:
             level=self.level.upper(),
             step=self.step,
             loss=metrics["loss"],
-            cosine=metrics["cosine_mse"],
-            jaccard=metrics["jaccard_mse"],
-            score=metrics["score_mse"],
+            top1_diff=metrics["top1_diff"],
+            spearman=metrics["spearman"],
+            kendall=metrics["kendall"],
         )
         logger.opt(colors=True).info(message)
 
@@ -353,44 +354,40 @@ class RewardMetricLogger:
 def train(
     run_name: str,
     model: RewardModel,
-    df_train: pl.DataFrame,
+    train_dataset: Dataset,
     learning_rate: float = 2e-4,
-    batch_size: int = 4,
     warmup_ratio: float = 0.1,
-    loss_weights: tuple[float, float] = (0.49, 0.09),
     max_grad_norm: float = 1.0,
     print_steps: int = 10,
+    scale: float = 20.0,
+    max_t: float = 10.0,
+    seed: int = 42,
 ) -> None:
     model.train()
-    tokenizer = model.tokenizer
 
-    df_train_encoded = encode_reward_dataframe(df_train, tokenizer)
-    train_dataloader = get_reward_dataloader(df_train_encoded, tokenizer, batch_size=batch_size, shuffle=True)
+    train_dataset = train_dataset.shuffle(seed=seed)
+    train_dataset.set_format("torch")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    scheduler = get_cosine_scheduler(
-        optimizer=optimizer, training_steps=len(train_dataloader), warmup_ratio=warmup_ratio
-    )
+    scheduler = get_cosine_scheduler(optimizer=optimizer, training_steps=len(train_dataset), warmup_ratio=warmup_ratio)
 
-    loss_fn = WeightedMSELoss(weights=loss_weights)
+    loss_fn = PRORankingLoss(scale=scale, max_t=max_t)
 
-    train_logger = RewardMetricLogger(level="train", run_name=run_name, weights=loss_weights)
+    train_logger = RewardMetricLogger(level="train", run_name=run_name)
 
-    progress_bar = tqdm(total=len(train_dataloader), desc="Train")
-    for idx, batch in enumerate(train_dataloader):
+    progress_bar = tqdm(total=len(train_dataset), desc="Train")
+    for idx, batch in enumerate(train_dataset):
         batch = {k: v.to(model.device) for k, v in batch.items()}
-        label = batch["label"]
+        score = batch["score"]
         output = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
+        loss = loss_fn(output, score)
 
         # log train metrics
-        train_logger.compute_step(output, label)
-        train_logger.update()
-        train_logger.log()
+        train_logger.update_and_log(output, score, loss.item(), log=True)
         if (idx + 1) % print_steps == 0:
             train_logger.print_log()
             train_logger.reset()
 
-        loss = loss_fn(output, label)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
 
@@ -405,96 +402,29 @@ def train(
 
 
 @torch.no_grad()
-def validate(
-    run_name: str, model: RewardModel, df_val: pl.DataFrame, batch_size: int = 4, loss_weights=(0.49, 0.09)
-) -> None:
+def validate(run_name: str, model: RewardModel, val_dataset: Dataset, scale: float = 20.0, max_t: float = 10.0) -> None:
     model.eval()
-    tokenizer = model.tokenizer
 
-    df_val_encoded = encode_reward_dataframe(df_val, tokenizer)
-    val_dataloader = get_reward_dataloader(df_val_encoded, tokenizer, batch_size=batch_size, shuffle=False)
+    val_dataset.set_format("torch")
 
-    val_logger = RewardMetricLogger(level="validation", run_name=run_name, weights=loss_weights)
+    val_logger = RewardMetricLogger(level="validation", run_name=run_name)
 
-    preds = []
+    loss_fn = PRORankingLoss(scale=scale, max_t=max_t)
 
-    progress_bar = tqdm(total=len(val_dataloader), desc="Validation")
-    for batch in val_dataloader:
+    progress_bar = tqdm(total=len(val_dataset), desc="Validation")
+    for batch in val_dataset:
         batch = {k: v.to(model.device) for k, v in batch.items()}
-        label = batch["label"]
+        score = batch["score"]
         output = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
+        loss = loss_fn(output, score)
 
-        preds.append(output.detach().cpu().numpy())
-
-        val_logger.compute_step(output, label)
-        val_logger.update()
+        val_logger.update_and_log(output, score, loss.item(), log=True)
 
         progress_bar.update(1)
         progress_bar.refresh()
 
     progress_bar.close()
     val_logger.print_log()
-
-    preds = np.vstack(preds).clip(min=0, max=1)
-    pred_cosine = preds[:, 0]
-    pred_jaccard = preds[:, 1]
-    pred_score = 0.7 * pred_cosine + 0.3 * pred_jaccard
-
-    df_val_with_preds = df_val.with_columns(
-        pl.Series(name="pred_cosine", values=pred_cosine),
-        pl.Series(name="pred_jaccard", values=pred_jaccard),
-        pl.Series(name="pred_score", values=pred_score),
-    )
-
-    df_rank = compute_rank_correlations(df_val_with_preds)
-    df_rank.write_parquet(SAVE_PATH / "log" / run_name / "val_rank.parquet")
-
-    message_format = (
-        "<{color}>Rank Correlation:\n"
-        "Cosine Spearman: {cs:.4f} Kendall: {ck:.4f}\n"
-        "Jaccard Spearman: {js:.4f} Kendall: {jk:.4f}\n"
-        "Score Spearman: {ss:.4f} Kendall: {sk:.4f}"
-        "</{color}>"
-    )
-    message = message_format.format(
-        color="red",
-        cs=df_rank["cosine_spearman"].mean(),
-        ck=df_rank["cosine_kendall"].mean(),
-        js=df_rank["jaccard_spearman"].mean(),
-        jk=df_rank["jaccard_kendall"].mean(),
-        ss=df_rank["score_spearman"].mean(),
-        sk=df_rank["score_kendall"].mean(),
-    )
-    logger.opt(colors=True).info(message)
-
-
-def compute_rank_correlations(df_with_preds: pl.DataFrame) -> pl.DataFrame:
-    df_fold = fold_reward_dataframe(df_with_preds)
-
-    def _map(row, col: str):
-        spearman = spearmanr(row[col], row[f"pred_{col}"]).statistic
-        kendall = kendalltau(row[col], row[f"pred_{col}"]).statistic
-
-        spearman = np.nan_to_num(spearman, nan=0.0)
-        kendall = np.nan_to_num(kendall, nan=0.0)
-
-        return {f"{col}_spearman": spearman, f"{col}_kendall": kendall}
-
-    columns = ["cosine", "jaccard", "score"]
-
-    exprs_compute_rank = []
-    for col in columns:
-        expr = (
-            pl.struct(col, f"pred_{col}")
-            .map_elements(partial(_map, col=col), return_dtype=pl.Struct)
-            .alias(f"{col}_rank")
-        )
-        exprs_compute_rank.append(expr)
-    exprs_unnest = [pl.col(f"{col}_rank").struct.unnest() for col in columns]
-
-    df_rank = df_fold.select(*exprs_compute_rank).select(*exprs_unnest)
-
-    return df_rank
 
 
 def bon_generate(

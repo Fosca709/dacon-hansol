@@ -158,3 +158,14 @@ def train_val_split_for_reward(
     df_val = unfold_reward_dataframe(df_val)
 
     return df_train, df_val
+
+
+def clean_reward_dataset(df_reward: pl.DataFrame) -> pl.DataFrame:
+    """
+    Remove duplicate answers and filter out IDs that have only a single remaining answer.
+    """
+    df = df_reward.unique(subset=["ID", "pred"], maintain_order=True)
+    df = fold_reward_dataframe(df)
+    mask = df["pred"].list.len() != 1
+    df = df.filter(mask)
+    return df
