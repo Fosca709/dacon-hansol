@@ -417,14 +417,15 @@ def train(
 
 
 @torch.no_grad()
-def validate(run_name: str, model: RewardModel, val_dataset: Dataset, scale: float = 20.0, max_t: float = 10.0) -> None:
+def validate(run_name: str, model: RewardModel, val_dataset: Dataset, loss_fn=None) -> None:
     model.eval()
 
     val_dataset.set_format("torch")
 
     val_logger = RewardMetricLogger(level="validation", run_name=run_name)
 
-    loss_fn = PRORankingLoss(scale=scale, max_t=max_t)
+    if loss_fn is None:
+        loss_fn = PRORankingLoss()
 
     progress_bar = tqdm(total=len(val_dataset), desc="Validation")
     for batch in val_dataset:
