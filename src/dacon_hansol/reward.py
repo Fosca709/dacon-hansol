@@ -4,7 +4,7 @@ import sys
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Optional, Self
+from typing import Any, Optional, Self
 
 import numpy as np
 import polars as pl
@@ -233,6 +233,18 @@ def listmle(rewards, **kwargs):
     return (torch.logcumsumexp(rewards, dim=0) - rewards).mean()
 
 
+class ListMLE_with_MSE(nn.Module):
+    def __init__(self, scale: float = 1.0, weight: float = 0.5):
+        super().__init__()
+        self.scale = scale
+        self.weight = weight
+
+    def forward(self, rewards: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        ranking_loss = listmle(self.scale * rewards)
+        mse_loss = torch.pow(rewards - targets, 2).mean()
+        return ranking_loss + self.weight * mse_loss
+
+
 def encode_reward_dataframe(df_reward: pl.DataFrame, tokenizer: PreTrainedTokenizerBase) -> Dataset:
     def make_message(row):
         message = get_zero_shot_messages(row["text"])
@@ -360,6 +372,7 @@ def train(
     run_name: str,
     model: RewardModel,
     train_dataset: Dataset,
+    accumulation_steps: int = 1,
     learning_rate: float = 2e-4,
     warmup_ratio: float = 0.1,
     max_grad_norm: float = 1.0,
@@ -373,7 +386,9 @@ def train(
     train_dataset.set_format("torch")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    scheduler = get_cosine_scheduler(optimizer=optimizer, training_steps=len(train_dataset), warmup_ratio=warmup_ratio)
+    scheduler = get_cosine_scheduler(
+        optimizer=optimizer, training_steps=len(train_dataset) // accumulation_steps, warmup_ratio=warmup_ratio
+    )
 
     if loss_fn is None:
         loss_fn = PRORankingLoss()
@@ -403,12 +418,14 @@ def train(
             train_logger.print_log()
             train_logger.reset()
 
+        loss = loss / accumulation_steps
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
 
-        optimizer.step()
-        scheduler.step()
-        optimizer.zero_grad()
+        if (idx + 1) % accumulation_steps == 0:
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
 
         progress_bar.update(1)
         progress_bar.refresh()
