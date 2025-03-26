@@ -59,3 +59,9 @@ def download_reward_dataset() -> None:
     hf_hub_download(
         repo_id=HF_REPO_NAME, filename="data/reward.parquet", local_dir=SAVE_PATH / "data", token=HF_API_TOKEN
     )
+
+
+def download_model(model_name: str) -> None:
+    snapshot_download(
+        repo_id=HF_REPO_NAME, token=HF_API_TOKEN, local_dir=SAVE_PATH / "model", allow_patterns=f"{model_name}/**"
+    )
