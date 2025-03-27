@@ -55,10 +55,10 @@ def hf_upload_file(file_path: Path, folder_in_repo: str = "") -> None:
     api.upload_file(path_or_fileobj=file_path, path_in_repo=f"{folder_in_repo}/{file_path.name}", repo_id=HF_REPO_NAME)
 
 
-def download_reward_dataset() -> None:
-    hf_hub_download(
-        repo_id=HF_REPO_NAME, filename="data/reward.parquet", local_dir=SAVE_PATH / "data", token=HF_API_TOKEN
-    )
+# def download_reward_dataset() -> None:
+#     hf_hub_download(
+#         repo_id=HF_REPO_NAME, filename="data/reward.parquet", local_dir=SAVE_PATH / "data", token=HF_API_TOKEN
+#     )
 
 
 def download_model(model_name: str) -> None:

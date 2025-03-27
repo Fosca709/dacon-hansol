@@ -9,7 +9,8 @@ from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from trl import DataCollatorForCompletionOnlyLM, apply_chat_template
 
 from . import SAVE_PATH
-from .utils import download_reward_dataset
+
+# from .utils import download_reward_dataset
 
 DATA_PATH = SAVE_PATH / "data"
 
@@ -126,10 +127,10 @@ def unfold_reward_dataframe(df_fold: pl.DataFrame, fixed_columns: list[str] | No
     return df_fold.explode(*columns_unfold)
 
 
-def load_reward_dataset() -> pl.DataFrame:
-    data_path = SAVE_PATH / "data" / "data" / "reward.parquet"
-    if not os.path.exists(data_path):
-        download_reward_dataset()
+def load_reward_dataset(data_name: str = "reward") -> pl.DataFrame:
+    data_path = SAVE_PATH / "data" / f"{data_name}.parquet"
+    # if not os.path.exists(data_path):
+    #     download_reward_dataset()
 
     return pl.read_parquet(data_path)
 
